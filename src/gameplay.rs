@@ -28,7 +28,7 @@ use bevy::{
     math::{Quat, Vec2, Vec3},
     prelude::{default, App, AssetServer, Commands},
     reflect::Reflect,
-    render::texture::{Image},
+    render::texture::Image,
     sprite::{SpriteBundle, SpriteSheetBundle, TextureAtlas, TextureAtlasLayout},
     time::{Time, Timer},
     transform::components::Transform,
@@ -332,12 +332,7 @@ impl Spacecraft {
         self.delta_rotation = 0.;
     }
 
-    pub fn collide(
-        &mut self,
-        damage: i32,
-        reduce_to_one: bool,
-        score: &mut PlayerScore,
-    ) -> bool {
+    pub fn collide(&mut self, damage: i32, reduce_to_one: bool, score: &mut PlayerScore) -> bool {
         // Whether to swap
         if self.health - damage <= 0 && reduce_to_one {
             self.health = 1;
@@ -401,24 +396,34 @@ pub fn handle_inputs(
     if let Ok((entity, mut player_ship)) = player_ship.get_single_mut() {
         let max_velocity = ShipProfile::from_type(player_ship.ship_type).max_velocity;
         player_ship.end_frame();
-        if inputs.pressed(KeyCode::ArrowLeft) && !state.get().eq(&GameState::Paused){
+        if inputs.pressed(KeyCode::ArrowLeft) && !state.get().eq(&GameState::Paused) {
             player_ship.rotate(max_velocity * -TURN_SPEED);
         }
-        if inputs.pressed(KeyCode::ArrowRight) && !state.get().eq(&GameState::Paused){
+        if inputs.pressed(KeyCode::ArrowRight) && !state.get().eq(&GameState::Paused) {
             player_ship.rotate(max_velocity * TURN_SPEED);
         }
         if inputs.pressed(KeyCode::ArrowUp) {
             player_ship.velocity += max_velocity * ACCELERATION_SPEED;
-            player_ship.velocity = player_ship.velocity.clamp(-0.3 * max_velocity, max_velocity);
+            player_ship.velocity = player_ship
+                .velocity
+                .clamp(-0.3 * max_velocity, max_velocity);
         }
         if inputs.pressed(KeyCode::ArrowDown) {
             player_ship.velocity -= max_velocity * ACCELERATION_SPEED;
-            player_ship.velocity = player_ship.velocity.clamp(-0.3 * max_velocity, max_velocity);
+            player_ship.velocity = player_ship
+                .velocity
+                .clamp(-0.3 * max_velocity, max_velocity);
         }
-        if inputs.pressed(KeyCode::Space) && !state.get().eq(&GameState::Paused) && player_ship.weapon_cooldown.finished() {
+        if inputs.pressed(KeyCode::Space)
+            && !state.get().eq(&GameState::Paused)
+            && player_ship.weapon_cooldown.finished()
+        {
             ship_fire(&mut commands, &mut player_ship, &bullet_texture, true)
         }
-        if inputs.pressed(KeyCode::KeyS) && !state.get().eq(&GameState::Paused) && player_ship.shield_recharge.finished() {
+        if inputs.pressed(KeyCode::KeyS)
+            && !state.get().eq(&GameState::Paused)
+            && player_ship.shield_recharge.finished()
+        {
             commands.entity(entity).insert(RechargingShieldMarker);
             player_ship.shield_recharge.reset();
         }
@@ -790,7 +795,8 @@ fn collide_bullets(
                         if let Some(mut entity) = commands.get_entity(*b) {
                             if let Some((mut s, _)) = ships
                                 .iter_mut()
-                                .map(|(e, s)| (s, &e == b)).find(|(_, x)| *x)
+                                .map(|(e, s)| (s, &e == b))
+                                .find(|(_, x)| *x)
                             {
                                 s.collide(1, a_shotby_p, &mut score);
                             } else {
@@ -810,7 +816,8 @@ fn collide_bullets(
                         if let Some(mut entity) = commands.get_entity(*a) {
                             if let Some((mut s, _)) = ships
                                 .iter_mut()
-                                .map(|(e, s)| (s, &e == b)).find(|(_, x)| *x)
+                                .map(|(e, s)| (s, &e == b))
+                                .find(|(_, x)| *x)
                             {
                                 s.collide(1, a_shotby_p, &mut score);
                             } else {
