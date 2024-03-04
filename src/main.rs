@@ -1,6 +1,6 @@
 use bevy::{
     app::{App, PluginGroup, Update},
-    asset::{AssetServer, Handle},
+    asset::{AssetMetaCheck, AssetServer, Handle},
     core_pipeline::core_2d::Camera2dBundle,
     ecs::{
         component::Component,
@@ -37,6 +37,7 @@ pub mod ui;
 
 fn main() {
     App::new()
+        .insert_resource(AssetMetaCheck::Never)
         .insert_state(GameLifecycleState::MainMenu)
         .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
         .add_plugins(GameplayPlugin)
@@ -203,7 +204,10 @@ fn init_tutorial(mut commands: Commands, background: Res<BackgroundPNG>, window:
         "Luckily, we have you to save us. Use the [ARROW KEYS] to tell the engine crew where to go.",
         "[LEFT] will turn left, [RIGHT] will turn right, [UP] will increase throttle, [DOWN] will decrease it.",
         "To shoot the laser cannons, press [SPACE].",
-        "If you shoot a ship, you will capture it. That means you now control it.",
+        "If you shoot a ship, you will capture it. Then, you can do three things with it.",
+        "By pressing [1], you will switch perspective to that ship, controlling it yourself.",
+        "By pressing [2], you'll turn the ship into an ally, fighting for us, but without you controlling it.",
+        "By pressing [3], you'll scuttle the ship where is flies, destroying it.",
         "Hopefully that might give us a chance against the bigger ships out there.",
         "There's one final thing, captain. If you press [S], we'll begin to recharge shields.",
         "But be careful! We can't move while they're charging; we're sitting ducks.",

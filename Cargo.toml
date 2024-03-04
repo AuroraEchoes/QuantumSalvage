@@ -13,6 +13,6 @@ opt-level = 3
 
 [dependencies]
 bevy = "0.13.0"
-bevy-inspector-egui = "0.23.2"
+bevy-inspector-egui = "0.23.3"
 bevy_rapier2d = "0.25.0"
 rand = "0.8.5"

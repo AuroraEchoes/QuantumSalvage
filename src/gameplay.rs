@@ -9,7 +9,7 @@ use crate::{BackgroundPNG, GameLifecycleState};
 use bevy::ecs::schedule::common_conditions::in_state;
 use bevy::ecs::schedule::{IntoSystemConfigs, NextState, OnEnter, OnExit, State, States};
 use bevy::hierarchy::{BuildChildren, Children, DespawnRecursiveExt};
-use bevy::time::TimerMode;
+use bevy::time::{Stopwatch, TimerMode};
 use bevy::ui::node_bundles::ImageBundle;
 use bevy::ui::{Style, UiImage, Val};
 use bevy::{
@@ -45,8 +45,8 @@ use bevy_rapier2d::{
 };
 use rand::Rng;
 
-pub const TURN_SPEED: f32 = 0.025;
-pub const ACCELERATION_SPEED: f32 = 0.0005;
+pub const TURN_SPEED: f32 = 0.5;
+pub const ACCELERATION_SPEED: f32 = 0.005;
 pub const BULLET_SPEED: f32 = 0.01;
 pub const MAX_VELOCITY: f32 = 0.05;
 
@@ -59,8 +59,7 @@ impl Plugin for GameplayPlugin {
             .register_type::<Spacecraft>()
             .insert_state(GameState::Regular)
             .add_plugins((
-                // WorldInspectorPlugin::default(),
-                // RapierDebugRenderPlugin::default(),
+                WorldInspectorPlugin::default(),
                 RapierPhysicsPlugin::<NoUserData>::pixels_per_meter(100.0),
                 DialoguePlugin,
             ))
@@ -124,10 +123,11 @@ fn setup(
     background: Res<BackgroundPNG>,
     mut texture_atlases: ResMut<Assets<TextureAtlasLayout>>,
     mut camera: Query<&mut Transform, With<Camera2d>>,
+    time: Res<Time>,
 ) {
     if let Ok(mut camera) = camera.get_single_mut() {
-        camera.scale.x = 2.;
-        camera.scale.y = 2.
+        camera.scale.x = 1.4;
+        camera.scale.y = 1.4;
     }
     commands.spawn(SpriteBundle {
         texture: background.0.clone(),
@@ -158,7 +158,7 @@ fn setup(
 
     commands
         .spawn(PlayerBundle::create_ship(
-            ShipType::Ship4,
+            ShipType::Ship1,
             Vec2::new(0., 0.),
             &textures,
         ))
@@ -166,7 +166,7 @@ fn setup(
     commands.insert_resource(PlayerScore {
         score: 0,
         add_score_timer: Timer::new(Duration::from_secs(10), TimerMode::Repeating),
-        survived_time: Instant::now(),
+        survived_time: Stopwatch::new(),
     });
 
     commands.insert_resource(textures)
@@ -188,8 +188,8 @@ fn remove_overly_long_tag(
 
 fn zoom_back_in(mut camera: Query<&mut Transform, With<Camera2d>>) {
     if let Ok(mut camera) = camera.get_single_mut() {
-        camera.scale.x = 2.;
-        camera.scale.y = 2.
+        camera.scale.x = 1.;
+        camera.scale.y = 1.
     }
 }
 
@@ -404,27 +404,28 @@ pub fn handle_inputs(
     state: Res<State<GameState>>,
 ) {
     if let Ok((entity, mut player_ship)) = player_ship.get_single_mut() {
+        let max_velocity = ShipProfile::from_type(player_ship.ship_type).max_velocity;
         player_ship.end_frame();
-        if inputs.pressed(KeyCode::ArrowLeft) {
-            player_ship.rotate(-TURN_SPEED);
+        if inputs.pressed(KeyCode::ArrowLeft) && !state.get().eq(&GameState::Paused){
+            player_ship.rotate(max_velocity * -TURN_SPEED);
         }
-        if inputs.pressed(KeyCode::ArrowRight) {
-            player_ship.rotate(TURN_SPEED);
+        if inputs.pressed(KeyCode::ArrowRight) && !state.get().eq(&GameState::Paused){
+            player_ship.rotate(max_velocity * TURN_SPEED);
         }
         if inputs.pressed(KeyCode::ArrowUp) {
-            player_ship.velocity += ACCELERATION_SPEED;
-            player_ship.velocity = player_ship.velocity.clamp(0., MAX_VELOCITY);
+            player_ship.velocity += max_velocity * ACCELERATION_SPEED;
+            player_ship.velocity = player_ship.velocity.clamp(-0.3 * max_velocity, max_velocity);
         }
         if inputs.pressed(KeyCode::ArrowDown) {
-            player_ship.velocity -= ACCELERATION_SPEED;
-            player_ship.velocity = player_ship.velocity.clamp(0., MAX_VELOCITY);
+            player_ship.velocity -= max_velocity * ACCELERATION_SPEED;
+            player_ship.velocity = player_ship.velocity.clamp(-0.3 * max_velocity, max_velocity);
         }
-        if inputs.pressed(KeyCode::Space) {
+        if inputs.pressed(KeyCode::Space) && !state.get().eq(&GameState::Paused) {
             if player_ship.weapon_cooldown.finished() {
                 ship_fire(&mut commands, &mut player_ship, &*bullet_texture, true)
             }
         }
-        if inputs.pressed(KeyCode::KeyS) {
+        if inputs.pressed(KeyCode::KeyS) && !state.get().eq(&GameState::Paused) {
             if player_ship.shield_recharge.finished() {
                 commands.entity(entity).insert(RechargingShieldMarker);
                 player_ship.shield_recharge.reset();
@@ -498,6 +499,7 @@ fn check_for_usage_decision(
             }
         }
         commands.entity(image.single()).despawn();
+        print!("Despawn menu image");
         state.set(GameState::Regular);
     }
 }
@@ -662,6 +664,7 @@ pub fn spawn_bullet(
     lateral_offset: f32,
     player_shot: bool,
 ) {
+    println!("SPAWNING");
     let parent_template = ShipProfile::from_type(parent.ship_type);
     let lateral_heading = parent.heading - (PI / 2.);
     let lateral_offset_vec =
@@ -788,7 +791,6 @@ fn collide_bullets(
                 for (entity, mut ship) in ships.iter_mut() {
                     if &entity == a {
                         if let Some(mut entity) = commands.get_entity(*a) {
-                            println!("HEREA");
                             entity.insert(ExplosionMarker);
                             if ship.collide(1, b_shotby_p, &mut *score) {
                                 entity.insert(MyFateLiesInTheBalanceAndIWouldReallyAppreciateIfIfYouDidntKillMeMarker);
@@ -804,13 +806,13 @@ fn collide_bullets(
                             {
                                 s.collide(1, a_shotby_p, &mut *score);
                             } else {
+                                println!("Kill (theoretically) bullet in collision");
                                 entity.despawn();
                             }
                         }
                         return;
                     } else if &entity == b {
                         if let Some(mut entity) = commands.get_entity(*b) {
-                            println!("HEREB");
                             entity.insert(ExplosionMarker);
                             if ship.collide(1, a_shotby_p, &mut *score) {
                                 entity.insert(MyFateLiesInTheBalanceAndIWouldReallyAppreciateIfIfYouDidntKillMeMarker);
@@ -826,6 +828,7 @@ fn collide_bullets(
                             {
                                 s.collide(1, a_shotby_p, &mut *score);
                             } else {
+                                println!("Kill (theoretically) bullet in collision");
                                 entity.despawn();
                             }
                         }
@@ -900,6 +903,7 @@ pub fn handle_explosions(
             if atlas.index < 5 {
                 atlas.index += 1;
                 if let Some(mut entity) = commands.get_entity(e) {
+                    println!("Kill finished explosion");
                     entity.despawn();
                 }
             }
@@ -956,6 +960,7 @@ fn kill_dead_ships(
             }
         }
         if player.health <= 0 {
+            println!("Kill player when dead");
             commands.entity(entity).despawn();
             state.set(GameLifecycleState::EndScreen);
         }
@@ -1137,10 +1142,11 @@ pub fn spawn_ships(
     textures: Res<ShipTextures>,
 ) {
     if let Ok(player) = player.get_single() {
-        spawn_points.0 += (0.4 * player.position.distance(Vec2::new(0., 0.))
+        spawn_points.0 += ((0.4 * player.position.distance(Vec2::new(0., 0.))
             + (score.survived_time.elapsed().as_secs_f32() / 20.)
             + (score.score as f32 / 50.))
-            .floor() as i32
+            * 0.25)
+            .ceil() as i32
             - points_currently_deployed(enemies.iter().map(|s| &s.ship_type).collect::<Vec<_>>());
         loop {
             let next_ship =
@@ -1162,7 +1168,7 @@ fn points_currently_deployed(ships: Vec<&ShipType>) -> i32 {
 
 fn points_for_ship(ship: &ShipType) -> i32 {
     match ship {
-        ShipType::Ship1 => 3,
+        ShipType::Ship1 => 4,
         ShipType::Ship2 => 7,
         ShipType::Ship3 => 15,
         ShipType::Ship4 => 21,
@@ -1208,24 +1214,9 @@ fn take_ship_stock(ships: Vec<&ShipType>) -> ShipType {
     types[0].0
 }
 
-fn temp_choose_type(x: usize) -> ShipType {
-    if x < 2 {
-        ShipType::Ship1
-    } else if x < 4 {
-        ShipType::Ship2
-    } else if x < 6 {
-        ShipType::Ship3
-    } else if x < 9 {
-        ShipType::Ship4
-    } else if x < 13 {
-        ShipType::Ship5
-    } else {
-        ShipType::Ship6
-    }
-}
-
 fn update_score(time: Res<Time>, mut score: ResMut<PlayerScore>) {
     score.add_score_timer.tick(time.delta());
+    score.survived_time.tick(time.delta());
     if score.add_score_timer.just_finished() {
         score.score += 5;
         score.add_score_timer.reset();
@@ -1236,5 +1227,5 @@ fn update_score(time: Res<Time>, mut score: ResMut<PlayerScore>) {
 pub struct PlayerScore {
     pub score: u32,
     pub add_score_timer: Timer,
-    pub survived_time: Instant,
+    pub survived_time: Stopwatch,
 }
