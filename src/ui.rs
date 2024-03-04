@@ -7,15 +7,15 @@ use bevy::{
         query::With,
         system::{Commands, Query, Res, ResMut, Resource},
     },
-    hierarchy::{BuildChildren, ChildBuilder, Children},
+    hierarchy::{BuildChildren, Children},
     math::Vec2,
     prelude::default,
     render::{color::Color, texture::Image},
-    sprite::{SpriteSheetBundle, TextureAtlas, TextureAtlasLayout},
+    sprite::{TextureAtlas, TextureAtlasLayout},
     text::{Text, TextSection, TextStyle},
     ui::{
         node_bundles::{AtlasImageBundle, ImageBundle, NodeBundle, TextBundle},
-        AlignItems, FlexDirection, JustifyContent, Node, PositionType, Style, UiImage, UiRect, Val,
+        AlignItems, FlexDirection, JustifyContent, PositionType, Style, UiImage, UiRect, Val,
     },
 };
 
@@ -145,10 +145,10 @@ pub fn update_weapon_ui(
             4
         } else {
             match ship.weapon_cooldown.fraction() {
-                x if x >= 0. && x < 0.25 => 0,
-                x if x >= 0.25 && x < 0.5 => 1,
-                x if x >= 0.5 && x < 0.75 => 2,
-                x if x >= 0.75 && x < 1. => 3,
+                x if (0. ..0.25).contains(&x) => 0,
+                x if (0.25..0.5).contains(&x) => 1,
+                x if (0.5..0.75).contains(&x) => 2,
+                x if (0.75..1.).contains(&x) => 3,
                 _ => 0,
             }
         };
@@ -203,7 +203,7 @@ pub fn update_shield_ui(
                     ..default()
                 })
                 .with_children(|parent| {
-                    for i in 0..ShipProfile::from_type(ship.ship_type).max_health as i32 {
+                    for i in 0..ShipProfile::from_type(ship.ship_type).max_health {
                         let image = match i < ship.health {
                             true => images.full.clone(),
                             false => images.empty.clone(),

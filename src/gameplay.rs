@@ -1,4 +1,3 @@
-use std::time::Instant;
 use std::{f32::consts::PI, time::Duration};
 
 use crate::dialogue::{update_dialogue, Dialogue, DialoguePlugin};
@@ -13,7 +12,7 @@ use bevy::time::{Stopwatch, TimerMode};
 use bevy::ui::node_bundles::ImageBundle;
 use bevy::ui::{Style, UiImage, Val};
 use bevy::{
-    app::{Plugin, PluginGroup, PreUpdate, Update},
+    app::{Plugin, PluginGroup, Update},
     asset::{Assets, Handle},
     core::Name,
     core_pipeline::core_2d::Camera2d,
@@ -27,21 +26,18 @@ use bevy::{
     },
     input::{keyboard::KeyCode, ButtonInput},
     math::{Quat, Vec2, Vec3},
-    prelude::{default, App, AssetServer, Camera2dBundle, Commands, Startup},
+    prelude::{default, App, AssetServer, Commands},
     reflect::Reflect,
-    render::texture::{Image, ImagePlugin},
+    render::texture::{Image},
     sprite::{SpriteBundle, SpriteSheetBundle, TextureAtlas, TextureAtlasLayout},
     time::{Time, Timer},
     transform::components::Transform,
     window::Window,
-    DefaultPlugins,
 };
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_rapier2d::{
     geometry::{ActiveCollisionTypes, ActiveEvents, ActiveHooks, Collider},
     pipeline::CollisionEvent,
     plugin::{NoUserData, RapierPhysicsPlugin},
-    render::RapierDebugRenderPlugin,
 };
 use rand::Rng;
 
@@ -59,7 +55,6 @@ impl Plugin for GameplayPlugin {
             .register_type::<Spacecraft>()
             .insert_state(GameState::Regular)
             .add_plugins((
-                WorldInspectorPlugin::default(),
                 RapierPhysicsPlugin::<NoUserData>::pixels_per_meter(100.0),
                 DialoguePlugin,
             ))
@@ -123,7 +118,7 @@ fn setup(
     background: Res<BackgroundPNG>,
     mut texture_atlases: ResMut<Assets<TextureAtlasLayout>>,
     mut camera: Query<&mut Transform, With<Camera2d>>,
-    time: Res<Time>,
+    _time: Res<Time>,
 ) {
     if let Ok(mut camera) = camera.get_single_mut() {
         camera.scale.x = 1.4;
@@ -194,13 +189,13 @@ fn zoom_back_in(mut camera: Query<&mut Transform, With<Camera2d>>) {
 }
 
 fn spawn_enemy(
-    mut commands: &mut Commands,
+    commands: &mut Commands,
     base_pos: Vec2,
     ship_type: ShipType,
     ship_textures: &ShipTextures,
 ) {
     let mut rand = rand::thread_rng();
-    let mut position = Vec2::new(rand.gen_range(-2f32..2f32), rand.gen_range(-2f32..2f32));
+    let _position = Vec2::new(rand.gen_range(-2f32..2f32), rand.gen_range(-2f32..2f32));
     let poss_spawn_coords = [
         rand.gen_range(-2.5..-1.2),
         rand.gen_range(1.2..2.5),
@@ -216,7 +211,7 @@ fn spawn_enemy(
             pos,
             ship_textures,
         ))
-        .insert(Name::new(format!("Enemy")));
+        .insert(Name::new("Enemy".to_string()));
 }
 
 fn tick_timer(time: Res<Time>, mut ships: Query<&mut Spacecraft>) {
@@ -341,7 +336,7 @@ impl Spacecraft {
         &mut self,
         damage: i32,
         reduce_to_one: bool,
-        mut score: &mut PlayerScore,
+        score: &mut PlayerScore,
     ) -> bool {
         // Whether to swap
         if self.health - damage <= 0 && reduce_to_one {
@@ -420,16 +415,12 @@ pub fn handle_inputs(
             player_ship.velocity -= max_velocity * ACCELERATION_SPEED;
             player_ship.velocity = player_ship.velocity.clamp(-0.3 * max_velocity, max_velocity);
         }
-        if inputs.pressed(KeyCode::Space) && !state.get().eq(&GameState::Paused) {
-            if player_ship.weapon_cooldown.finished() {
-                ship_fire(&mut commands, &mut player_ship, &*bullet_texture, true)
-            }
+        if inputs.pressed(KeyCode::Space) && !state.get().eq(&GameState::Paused) && player_ship.weapon_cooldown.finished() {
+            ship_fire(&mut commands, &mut player_ship, &bullet_texture, true)
         }
-        if inputs.pressed(KeyCode::KeyS) && !state.get().eq(&GameState::Paused) {
-            if player_ship.shield_recharge.finished() {
-                commands.entity(entity).insert(RechargingShieldMarker);
-                player_ship.shield_recharge.reset();
-            }
+        if inputs.pressed(KeyCode::KeyS) && !state.get().eq(&GameState::Paused) && player_ship.shield_recharge.finished() {
+            commands.entity(entity).insert(RechargingShieldMarker);
+            player_ship.shield_recharge.reset();
         }
         if inputs.pressed(KeyCode::Enter) {
             dialogue.hide()
@@ -494,7 +485,7 @@ fn check_for_usage_decision(
             ShipUsageDecision::Destroy => {
                 for (future_destruction_entity, mut im_about_to_explode) in ship.iter_mut() {
                     commands.entity(future_destruction_entity).remove::<MyFateLiesInTheBalanceAndIWouldReallyAppreciateIfIfYouDidntKillMeMarker>();
-                    im_about_to_explode.collide(100, false, &mut *score);
+                    im_about_to_explode.collide(100, false, &mut score);
                 }
             }
         }
@@ -551,10 +542,10 @@ pub fn recharge_shield(
     for (entity, mut timer, mut atlas) in children.iter_mut() {
         timer.0.tick(time.delta());
         let index = match timer.0.fraction() {
-            x if x >= 0. && x < 0.2 => 0,
-            x if x >= 0.2 && x < 0.4 => 1,
-            x if x >= 0.4 && x < 0.6 => 2,
-            x if x >= 0.6 && x < 0.8 => 3,
+            x if (0. ..0.2).contains(&x) => 0,
+            x if (0.2..0.4).contains(&x) => 1,
+            x if (0.4..0.6).contains(&x) => 2,
+            x if (0.6..0.8).contains(&x) => 3,
             _ => 4,
         };
         atlas.index = index;
@@ -579,7 +570,7 @@ pub fn handle_npc_logic(
     bullet_texture: Res<BulletTexture>,
 ) {
     if let Ok(player) = player.get_single() {
-        for (mut logic, mut craft) in enemies.iter_mut() {
+        for (_logic, mut craft) in enemies.iter_mut() {
             craft.end_frame();
             let ideal_direction = player.position - craft.position;
             let ideal_heading = f32::atan2(ideal_direction.x, ideal_direction.y);
@@ -590,16 +581,16 @@ pub fn handle_npc_logic(
             let dist = craft.position.distance(player.position);
             let ideal_speed = match dist {
                 x if x > 1.2 => (1. * max_speed).min(max_speed),
-                x if x <= 1.2 && x >= 0.5 => (x * (1. / 0.7) * max_speed).min(max_speed),
+                x if (0.5..=1.2).contains(&x) => (x * (1. / 0.7) * max_speed).min(max_speed),
                 x if x < 0.5 => (0. * max_speed).min(max_speed),
                 _ => max_speed,
             };
             craft.velocity = ideal_speed * 0.15;
             if craft.weapon_cooldown.finished() && dist < 1.2 {
-                ship_fire(&mut commands, &mut craft, &*bullet_texture, false)
+                ship_fire(&mut commands, &mut craft, &bullet_texture, false)
             }
         }
-        for (mut logic, mut craft) in captured.iter_mut() {
+        for (_logic, mut craft) in captured.iter_mut() {
             let mut enemies = enemies.iter().collect::<Vec<_>>();
             enemies.sort_by(|(_, enemy_one), (_, enemy_two)| {
                 craft
@@ -608,7 +599,7 @@ pub fn handle_npc_logic(
                     .partial_cmp(&craft.position.distance(enemy_two.position))
                     .unwrap()
             });
-            if let Some((_, target)) = enemies.get(0) {
+            if let Some((_, target)) = enemies.first() {
                 craft.end_frame();
                 let ideal_direction = target.position - craft.position;
                 let ideal_heading = f32::atan2(ideal_direction.x, ideal_direction.y);
@@ -619,13 +610,13 @@ pub fn handle_npc_logic(
                 let dist = craft.position.distance(target.position);
                 let ideal_speed = match dist {
                     x if x > 1.2 => 1. * max_speed,
-                    x if x <= 1.2 && x >= 0.5 => x * (1. / 0.7) * max_speed,
+                    x if (0.5..=1.2).contains(&x) => x * (1. / 0.7) * max_speed,
                     x if x < 0.5 => 0. * max_speed,
                     _ => max_speed,
                 };
                 craft.velocity = ideal_speed * 0.15;
                 if craft.weapon_cooldown.finished() && dist < 1.2 {
-                    ship_fire(&mut commands, &mut craft, &*bullet_texture, false)
+                    ship_fire(&mut commands, &mut craft, &bullet_texture, false)
                 }
             }
         }
@@ -636,7 +627,7 @@ pub fn handle_npc_logic(
 pub struct BulletTexture(Handle<Image>);
 
 pub fn ship_fire(
-    mut commands: &mut Commands,
+    commands: &mut Commands,
     parent: &mut Spacecraft,
     bullet_texture: &BulletTexture,
     player_shot: bool,
@@ -658,13 +649,12 @@ pub fn ship_fire(
 }
 
 pub fn spawn_bullet(
-    mut commands: &mut Commands,
-    mut parent: &mut Spacecraft,
+    commands: &mut Commands,
+    parent: &mut Spacecraft,
     bullet_texture: &BulletTexture,
     lateral_offset: f32,
     player_shot: bool,
 ) {
-    println!("SPAWNING");
     let parent_template = ShipProfile::from_type(parent.ship_type);
     let lateral_heading = parent.heading - (PI / 2.);
     let lateral_offset_vec =
@@ -750,7 +740,7 @@ fn pause_for_captured_ship(
     >,
     image: Res<PausedWhatToDoImage>,
 ) {
-    if let Ok(_) = ship_killed.get_single() {
+    if ship_killed.get_single().is_ok() {
         state.set(GameState::Paused);
         commands
             .spawn(ImageBundle {
@@ -792,7 +782,7 @@ fn collide_bullets(
                     if &entity == a {
                         if let Some(mut entity) = commands.get_entity(*a) {
                             entity.insert(ExplosionMarker);
-                            if ship.collide(1, b_shotby_p, &mut *score) {
+                            if ship.collide(1, b_shotby_p, &mut score) {
                                 entity.insert(MyFateLiesInTheBalanceAndIWouldReallyAppreciateIfIfYouDidntKillMeMarker);
                             }
                         }
@@ -800,11 +790,9 @@ fn collide_bullets(
                         if let Some(mut entity) = commands.get_entity(*b) {
                             if let Some((mut s, _)) = ships
                                 .iter_mut()
-                                .map(|(e, s)| (s, &e == b))
-                                .filter(|(_, x)| *x)
-                                .next()
+                                .map(|(e, s)| (s, &e == b)).find(|(_, x)| *x)
                             {
-                                s.collide(1, a_shotby_p, &mut *score);
+                                s.collide(1, a_shotby_p, &mut score);
                             } else {
                                 println!("Kill (theoretically) bullet in collision");
                                 entity.despawn();
@@ -814,7 +802,7 @@ fn collide_bullets(
                     } else if &entity == b {
                         if let Some(mut entity) = commands.get_entity(*b) {
                             entity.insert(ExplosionMarker);
-                            if ship.collide(1, a_shotby_p, &mut *score) {
+                            if ship.collide(1, a_shotby_p, &mut score) {
                                 entity.insert(MyFateLiesInTheBalanceAndIWouldReallyAppreciateIfIfYouDidntKillMeMarker);
                             }
                         }
@@ -822,11 +810,9 @@ fn collide_bullets(
                         if let Some(mut entity) = commands.get_entity(*a) {
                             if let Some((mut s, _)) = ships
                                 .iter_mut()
-                                .map(|(e, s)| (s, &e == b))
-                                .filter(|(_, x)| *x)
-                                .next()
+                                .map(|(e, s)| (s, &e == b)).find(|(_, x)| *x)
                             {
-                                s.collide(1, a_shotby_p, &mut *score);
+                                s.collide(1, a_shotby_p, &mut score);
                             } else {
                                 println!("Kill (theoretically) bullet in collision");
                                 entity.despawn();
@@ -872,7 +858,7 @@ pub fn handle_explosions(
     time: Res<Time>,
     images: Res<NonfatalExplosionImages>,
 ) {
-    for (e, transform) in unsetup_explosions.iter() {
+    for (e, _transform) in unsetup_explosions.iter() {
         let explosion_transform =
             Transform::from_xyz(0., 0., 30.).with_scale(Vec3::new(3., 3., 1.));
         if let Some(mut entity) = commands.get_entity(e) {
@@ -899,13 +885,11 @@ pub fn handle_explosions(
     }
     for (e, mut marker, mut atlas) in setup_expolosions.iter_mut() {
         marker.time_until_next_stage.tick(time.delta());
-        if marker.time_until_next_stage.just_finished() {
-            if atlas.index < 5 {
-                atlas.index += 1;
-                if let Some(mut entity) = commands.get_entity(e) {
-                    println!("Kill finished explosion");
-                    entity.despawn();
-                }
+        if marker.time_until_next_stage.just_finished() && atlas.index < 5 {
+            atlas.index += 1;
+            if let Some(mut entity) = commands.get_entity(e) {
+                println!("Kill finished explosion");
+                entity.despawn();
             }
         }
     }
@@ -930,7 +914,7 @@ fn enforce_border(
         if dist >= 10. {
             if dist >= 15. {
                 commands.entity(entity).insert(ExplosionMarker);
-                player.collide(100, false, &mut *score);
+                player.collide(100, false, &mut score);
             }
             dialogue.set_text("Captain! If we go much further out, we'll explode.".to_string());
             dialogue.show();
@@ -990,7 +974,7 @@ fn swap_ships(
     mut swap_to: Query<(Entity, &Transform, &mut Spacecraft), With<SwapToShipMarker>>,
     mut camera: Query<&mut Transform, (With<Camera2d>, Without<Spacecraft>)>,
 ) {
-    if let Ok((dest_entity, dest_transform, dest_spacecraft)) = swap_to.get_single_mut() {
+    if let Ok((dest_entity, dest_transform, _dest_spacecraft)) = swap_to.get_single_mut() {
         if let Ok(curr_entity) = swap_from.get_single() {
             commands
                 .entity(curr_entity)

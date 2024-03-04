@@ -7,8 +7,8 @@ use bevy::{
         entity::Entity,
         query::With,
         schedule::{
-            common_conditions::in_state, IntoSystemConfigs, NextState, OnEnter, OnExit, State,
-            States, SystemSet,
+            common_conditions::in_state, IntoSystemConfigs, NextState, OnEnter, OnExit,
+            States,
         },
         system::{Commands, Query, Res, ResMut, Resource},
     },
@@ -22,7 +22,7 @@ use bevy::{
     text::{Text, TextSection, TextStyle},
     ui::{
         node_bundles::{ImageBundle, NodeBundle, TextBundle},
-        AlignItems, BackgroundColor, FlexDirection, JustifyContent, PositionType, Style, UiImage,
+        AlignItems, FlexDirection, JustifyContent, PositionType, Style, UiImage,
         UiRect, Val, ZIndex,
     },
     window::Window,
