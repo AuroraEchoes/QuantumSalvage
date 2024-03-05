@@ -78,9 +78,9 @@ impl Plugin for GameplayPlugin {
                     handle_npc_logic,
                     move_bullets,
                     tick_timer,
-                    collide_bullets.after(handle_explosions),
-                    kill_far_bullets.after(handle_explosions),
-                    swap_ships.after(handle_explosions),
+                    collide_bullets,
+                    kill_far_bullets,
+                    swap_ships,
                     update_score,
                     spawn_ships,
                 )
@@ -96,9 +96,10 @@ impl Plugin for GameplayPlugin {
                     update_shield_ui,
                     update_score_text,
                     update_dialogue,
-                    handle_explosions,
+                    neo_handle_explosions,
                     recharge_shield,
-                    kill_dead_ships.after(handle_explosions),
+                    handle_shield_textures,
+                    kill_dead_ships,
                     enforce_border,
                 )
                     .run_if(in_state(GameLifecycleState::Game)),
@@ -385,6 +386,9 @@ pub fn move_spaceships(
 #[derive(Component)]
 pub struct RechargingShieldMarker;
 
+#[derive(Component)]
+pub struct ShieldTimeRemainingTimer(Timer);
+
 pub fn handle_inputs(
     mut commands: Commands,
     inputs: Res<ButtonInput<KeyCode>>,
@@ -507,55 +511,81 @@ pub fn recharge_shield(
     mut commands: Commands,
     time: Res<Time>,
     mut unsetup_recharging: Query<
-        (Entity, &Spacecraft),
-        (With<RechargingShieldMarker>, Without<Children>),
+        (Entity, &Spacecraft, &Transform),
+        (
+            With<RechargingShieldMarker>,
+            Without<ShieldTimeRemainingTimer>,
+        ),
     >,
     mut setup_recharging: Query<
-        (Entity, &mut Spacecraft),
-        (With<RechargingShieldMarker>, With<Children>),
+        (Entity, &mut Spacecraft, &mut ShieldTimeRemainingTimer),
+        Without<RechargingShieldMarker>,
     >,
-    mut children: Query<(Entity, &mut TimerComp, &mut TextureAtlas)>,
     shield_textures: Res<ShieldRechargeTextures>,
 ) {
-    for (entity, ship) in unsetup_recharging.iter_mut() {
-        commands.entity(entity).with_children(|parent| {
-            parent
-                .spawn(SpriteSheetBundle {
-                    texture: shield_textures.image.clone(),
-                    atlas: TextureAtlas {
-                        layout: shield_textures.atlas.clone(),
-                        index: 0,
-                    },
-                    transform: Transform::from_xyz(0., 0., 50.).with_scale(Vec3::new(4., 4., 1.)),
-                    ..default()
-                })
-                .insert(RechargingShieldMarker)
-                .insert(TimerComp(ship.shield_recharge.clone()));
+    for (entity, spacecraft, transform) in unsetup_recharging.iter_mut() {
+        let time = ShipProfile::from_type(spacecraft.ship_type)
+            .shield_recharge_time
+            .as_micros()
+            / 5;
+        let mut transform = transform.clone();
+        transform.translation.z = 50.;
+        transform.scale = Vec3::new(3., 3., 1.);
+        commands.spawn(ShieldRenderBundle {
+            frame_time: SoloShieldMarker(Timer::new(
+                Duration::from_micros(time as u64),
+                TimerMode::Repeating,
+            )),
+            atlas: SpriteSheetBundle {
+                transform,
+                texture: shield_textures.image.clone(),
+                atlas: TextureAtlas {
+                    layout: shield_textures.atlas.clone(),
+                    index: 0,
+                },
+                ..default()
+            },
         });
+        commands
+            .entity(entity)
+            .remove::<RechargingShieldMarker>()
+            .insert(ShieldTimeRemainingTimer(Timer::new(
+                ShipProfile::from_type(spacecraft.ship_type).shield_recharge_time,
+                TimerMode::Once,
+            )));
     }
-    for (entity, mut ship) in setup_recharging.iter_mut() {
+    for (entity, mut ship, mut timer) in setup_recharging.iter_mut() {
+        timer.0.tick(time.delta());
         ship.velocity = 0.;
         ship.delta_rotation = 0.;
         if ship.shield_recharge.just_finished() {
-            commands.entity(entity).remove::<RechargingShieldMarker>();
+            commands.entity(entity).remove::<ShieldTimeRemainingTimer>();
             ship.health += 1;
             ship.health = ship
                 .health
                 .min(ShipProfile::from_type(ship.ship_type).max_health);
         }
     }
-    for (entity, mut timer, mut atlas) in children.iter_mut() {
+}
+#[derive(Bundle)]
+pub struct ShieldRenderBundle {
+    frame_time: SoloShieldMarker,
+    atlas: SpriteSheetBundle,
+}
+
+#[derive(Component)]
+pub struct SoloShieldMarker(Timer);
+
+fn handle_shield_textures(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut shield_assets: Query<(Entity, &mut TextureAtlas, &mut SoloShieldMarker)>,
+) {
+    for (entity, mut atlas, mut timer) in shield_assets.iter_mut() {
         timer.0.tick(time.delta());
-        let index = match timer.0.fraction() {
-            x if (0. ..0.2).contains(&x) => 0,
-            x if (0.2..0.4).contains(&x) => 1,
-            x if (0.4..0.6).contains(&x) => 2,
-            x if (0.6..0.8).contains(&x) => 3,
-            _ => 4,
-        };
-        atlas.index = index;
-        if timer.0.just_finished() {
-            print!("Despawning {:?}", entity);
+        if timer.0.just_finished() && atlas.index < 5 {
+            atlas.index += 1;
+        } else if timer.0.just_finished() {
             commands.entity(entity).despawn();
         }
     }
@@ -786,9 +816,11 @@ fn collide_bullets(
                 for (entity, mut ship) in ships.iter_mut() {
                     if &entity == a {
                         if let Some(mut entity) = commands.get_entity(*a) {
-                            entity.insert(ExplosionMarker);
-                            if ship.collide(1, b_shotby_p, &mut score) {
-                                entity.insert(MyFateLiesInTheBalanceAndIWouldReallyAppreciateIfIfYouDidntKillMeMarker);
+                            if score.survived_time.elapsed_secs() > 3. {
+                                entity.insert(ExplosionMarker);
+                                if ship.collide(1, b_shotby_p, &mut score) {
+                                    entity.insert(MyFateLiesInTheBalanceAndIWouldReallyAppreciateIfIfYouDidntKillMeMarker);
+                                }
                             }
                         }
 
@@ -800,16 +832,21 @@ fn collide_bullets(
                             {
                                 s.collide(1, a_shotby_p, &mut score);
                             } else {
-                                println!("Kill (theoretically) bullet in collision");
+                                println!(
+                                    "Kill (theoretically) bullet in collision {:?}",
+                                    b_shotby_p
+                                );
                                 entity.despawn();
                             }
                         }
                         return;
                     } else if &entity == b {
                         if let Some(mut entity) = commands.get_entity(*b) {
-                            entity.insert(ExplosionMarker);
-                            if ship.collide(1, a_shotby_p, &mut score) {
-                                entity.insert(MyFateLiesInTheBalanceAndIWouldReallyAppreciateIfIfYouDidntKillMeMarker);
+                            if score.survived_time.elapsed_secs() > 3. {
+                                entity.insert(ExplosionMarker);
+                                if ship.collide(1, a_shotby_p, &mut score) {
+                                    entity.insert(MyFateLiesInTheBalanceAndIWouldReallyAppreciateIfIfYouDidntKillMeMarker);
+                                }
                             }
                         }
 
@@ -821,7 +858,10 @@ fn collide_bullets(
                             {
                                 s.collide(1, a_shotby_p, &mut score);
                             } else {
-                                println!("Kill (theoretically) bullet in collision");
+                                println!(
+                                    "Kill (theoretically) bullet in collision {:?}",
+                                    a_shotby_p
+                                );
                                 entity.despawn();
                             }
                         }
@@ -858,57 +898,55 @@ fn init_nonfatal_explosion_images_res(
     })
 }
 
-pub fn handle_explosions(
+#[derive(Bundle)]
+pub struct ExplosionBundle {
+    frame_time: SoloExplosionMarker,
+    atlas: SpriteSheetBundle,
+}
+
+#[derive(Component)]
+pub struct SoloExplosionMarker(Timer);
+
+fn neo_handle_explosions(
     mut commands: Commands,
-    unsetup_explosions: Query<(Entity, &Transform), With<ExplosionMarker>>,
-    mut setup_expolosions: Query<(Entity, &mut Explosion, &mut TextureAtlas)>,
     time: Res<Time>,
-    images: Res<NonfatalExplosionImages>,
+    explosion_ships: Query<(Entity, &Transform), (With<ExplosionMarker>, With<Spacecraft>)>,
+    mut explosions: Query<(Entity, &mut TextureAtlas, &mut SoloExplosionMarker)>,
+    assets: Res<NonfatalExplosionImages>,
 ) {
-    for (e, _transform) in unsetup_explosions.iter() {
-        let explosion_transform =
-            Transform::from_xyz(0., 0., 30.).with_scale(Vec3::new(3., 3., 1.));
-        if let Some(mut entity) = commands.get_entity(e) {
-            entity.with_children(|parent| {
-                parent
-                    .spawn(Explosion {
-                        time_until_next_stage: Timer::new(
-                            Duration::from_millis(300),
-                            bevy::time::TimerMode::Repeating,
-                        ),
-                    })
-                    .insert(SpriteSheetBundle {
-                        texture: images.image.clone(),
-                        atlas: TextureAtlas {
-                            layout: images.atlas.clone(),
-                            index: 0,
-                        },
-                        transform: explosion_transform,
-                        ..default()
-                    });
-            });
-        }
-        commands.entity(e).remove::<ExplosionMarker>();
+    for (entity, transform) in explosion_ships.iter() {
+        let mut transform = transform.clone();
+        transform.translation.z = 30.;
+        commands.spawn(ExplosionBundle {
+            frame_time: SoloExplosionMarker(Timer::new(
+                Duration::from_millis(200),
+                TimerMode::Repeating,
+            )),
+            atlas: SpriteSheetBundle {
+                transform,
+                texture: assets.image.clone(),
+                atlas: TextureAtlas {
+                    layout: assets.atlas.clone(),
+                    index: 0,
+                },
+                ..default()
+            },
+        });
+        commands.entity(entity).remove::<ExplosionMarker>();
     }
-    for (e, mut marker, mut atlas) in setup_expolosions.iter_mut() {
-        marker.time_until_next_stage.tick(time.delta());
-        if marker.time_until_next_stage.just_finished() && atlas.index < 5 {
+
+    for (entity, mut atlas, mut timer) in explosions.iter_mut() {
+        timer.0.tick(time.delta());
+        if timer.0.just_finished() && atlas.index < 5 {
             atlas.index += 1;
-            if let Some(mut entity) = commands.get_entity(e) {
-                println!("Kill finished explosion");
-                entity.despawn();
-            }
+        } else if timer.0.just_finished() {
+            commands.entity(entity).despawn();
         }
     }
 }
 
 #[derive(Component)]
 pub struct ExplosionMarker;
-
-#[derive(Component)]
-pub struct Explosion {
-    time_until_next_stage: Timer,
-}
 
 fn enforce_border(
     mut commands: Commands,
@@ -1016,7 +1054,7 @@ impl ShipType {
             collider: Collider::cuboid(40., 20.),
             events: ActiveEvents::all(),
             hooks: ActiveHooks::all(),
-            types: ActiveCollisionTypes::all(),
+            types: ActiveCollisionTypes::STATIC_STATIC,
         }
     }
 }
