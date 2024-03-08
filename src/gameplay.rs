@@ -90,7 +90,7 @@ impl Plugin for GameplayPlugin {
             .add_systems(
                 Update,
                 (
-                    camera_follow,
+                    camera_follow.after(move_spaceships),
                     update_weapon_ui,
                     update_throttle_ui,
                     update_shield_ui,
@@ -101,6 +101,7 @@ impl Plugin for GameplayPlugin {
                     handle_shield_textures,
                     kill_dead_ships,
                     enforce_border,
+                    update_delayed_location
                 )
                     .run_if(in_state(GameLifecycleState::Game)),
             );
@@ -151,6 +152,10 @@ fn setup(
         asset_server.load("captured_ship_options.png"),
     ));
     commands.insert_resource(AllyTexture(asset_server.load("ally_flag.png")));
+    commands.insert_resource(DelayedPlayerLocation {
+        buffered_locations: vec![],
+        current_location: Vec2::ZERO,
+    });
 
     commands
         .spawn(PlayerBundle::create_ship(
@@ -231,6 +236,7 @@ pub struct EnemySpacecraftBundle {
 
 impl EnemySpacecraftBundle {
     pub fn create_ship(ship_type: ShipType, pos: Vec2, ship_textures: &ShipTextures) -> Self {
+        let mut rand = rand::thread_rng();
         let template_ship = ShipProfile::from_type(ship_type);
         let transform = Transform {
             translation: Vec3::new(0., 0., 10.),
@@ -243,7 +249,7 @@ impl EnemySpacecraftBundle {
         };
         Self {
             spacecraft: Spacecraft::from_template(ship_type, pos),
-            logic: NPCLogic {},
+            logic: NPCLogic(Vec2::new(rand.gen_range(-0.3..0.3), rand.gen_range(-0.3..0.3))),
             sprite: SpriteBundle {
                 texture: ship_textures.texture(ship_type),
                 transform,
@@ -255,7 +261,7 @@ impl EnemySpacecraftBundle {
 }
 
 #[derive(Component, Reflect)]
-pub struct NPCLogic;
+pub struct NPCLogic(Vec2);
 
 #[derive(Component, Reflect)]
 pub struct Spacecraft {
@@ -463,7 +469,7 @@ pub struct MyFateLiesInTheBalanceAndIWouldReallyAppreciateIfIfYouDidntKillMeMark
 fn check_for_usage_decision(
     mut commands: Commands,
     mut state: ResMut<NextState<GameState>>,
-    usage: Query<&ShipUsageDecision>,
+    usage: Query<(Entity, &ShipUsageDecision)>,
     image: Query<Entity, With<ShipUsageImageMarker>>,
     mut ship: Query<
         (Entity, &mut Spacecraft),
@@ -472,7 +478,7 @@ fn check_for_usage_decision(
     mut score: ResMut<PlayerScore>,
     ally_texture: Res<AllyTexture>,
 ) {
-    if let Ok(decision) = usage.get_single() {
+    if let Ok((entity, decision)) = usage.get_single() {
         match decision {
             ShipUsageDecision::Transfer => {
                 for (transfer_entity, _) in ship.iter() {
@@ -499,6 +505,7 @@ fn check_for_usage_decision(
             }
         }
         commands.entity(image.single()).despawn();
+        commands.entity(entity).despawn();
         print!("Despawn menu image");
         state.set(GameState::Regular);
     }
@@ -583,7 +590,7 @@ fn handle_shield_textures(
 ) {
     for (entity, mut atlas, mut timer) in shield_assets.iter_mut() {
         timer.0.tick(time.delta());
-        if timer.0.just_finished() && atlas.index < 5 {
+        if timer.0.just_finished() && atlas.index < 4 {
             atlas.index += 1;
         } else if timer.0.just_finished() {
             commands.entity(entity).despawn();
@@ -594,6 +601,38 @@ fn handle_shield_textures(
 #[derive(Component)]
 pub struct Captured;
 
+#[derive(Resource)]
+pub struct DelayedPlayerLocation {
+    buffered_locations: Vec<(Vec2, f32)>,
+    current_location: Vec2,
+}
+
+fn update_delayed_location(
+    mut player_location: ResMut<DelayedPlayerLocation>,
+    timer: Res<PlayerScore>,
+    player: Query<&Spacecraft, With<PlayerMarker>>,
+) {
+    if let Ok(player) = player.get_single() {
+        let time_elapsed = timer.survived_time.elapsed_secs();
+        while let Some((_, timestamp)) = player_location.buffered_locations.get(0) {
+            if *timestamp < time_elapsed - 2. {
+                // This is out of date
+                player_location.buffered_locations.remove(0);
+            } else {
+                break;
+            }
+        }
+        if player_location.buffered_locations.len() <= 10 {
+            player_location
+                .buffered_locations
+                .push((player.position, time_elapsed));
+        }
+    }
+    if let Some((pos, _)) = player_location.buffered_locations.get(0) {
+        player_location.current_location = *pos;
+    }
+}
+
 pub fn handle_npc_logic(
     mut commands: Commands,
     mut enemies: Query<
@@ -601,58 +640,56 @@ pub fn handle_npc_logic(
         (Without<Captured>, Without<PlayerMarker>),
     >,
     mut captured: Query<(&mut NPCLogic, &mut Spacecraft), (With<Captured>, Without<PlayerMarker>)>,
-    player: Query<&Spacecraft, With<PlayerMarker>>,
+    player: Res<DelayedPlayerLocation>,
     bullet_texture: Res<BulletTexture>,
 ) {
-    if let Ok(player) = player.get_single() {
-        for (_logic, mut craft) in enemies.iter_mut() {
+    for (logic, mut craft) in enemies.iter_mut() {
+        craft.end_frame();
+        let ideal_direction = player.current_location - craft.position + logic.0;
+        let ideal_heading = f32::atan2(ideal_direction.x, ideal_direction.y);
+        let ideal_heading_delta = ideal_heading - craft.heading;
+        let delta_heading = ideal_heading_delta.clamp(-TURN_SPEED, TURN_SPEED);
+        craft.rotate(delta_heading);
+        let max_speed = ShipProfile::from_type(craft.ship_type).max_velocity;
+        let dist = craft.position.distance(player.current_location);
+        let ideal_speed = match dist {
+            x if x > 1.2 => (1. * max_speed).min(max_speed),
+            x if (0.5..=1.2).contains(&x) => (x * (1. / 0.7) * max_speed).min(max_speed),
+            x if x < 0.5 => (0. * max_speed).min(max_speed),
+            _ => max_speed,
+        };
+        craft.velocity = ideal_speed * 0.15;
+        if craft.weapon_cooldown.finished() && dist < 1.2 {
+            ship_fire(&mut commands, &mut craft, &bullet_texture, false)
+        }
+    }
+    for (_logic, mut craft) in captured.iter_mut() {
+        let mut enemies = enemies.iter().collect::<Vec<_>>();
+        enemies.sort_by(|(_, enemy_one), (_, enemy_two)| {
+            craft
+                .position
+                .distance(enemy_one.position)
+                .partial_cmp(&craft.position.distance(enemy_two.position))
+                .unwrap()
+        });
+        if let Some((_, target)) = enemies.first() {
             craft.end_frame();
-            let ideal_direction = player.position - craft.position;
+            let ideal_direction = target.position - craft.position;
             let ideal_heading = f32::atan2(ideal_direction.x, ideal_direction.y);
             let ideal_heading_delta = ideal_heading - craft.heading;
             let delta_heading = ideal_heading_delta.clamp(-TURN_SPEED, TURN_SPEED);
             craft.rotate(delta_heading);
             let max_speed = ShipProfile::from_type(craft.ship_type).max_velocity;
-            let dist = craft.position.distance(player.position);
+            let dist = craft.position.distance(target.position);
             let ideal_speed = match dist {
-                x if x > 1.2 => (1. * max_speed).min(max_speed),
-                x if (0.5..=1.2).contains(&x) => (x * (1. / 0.7) * max_speed).min(max_speed),
-                x if x < 0.5 => (0. * max_speed).min(max_speed),
+                x if x > 1.2 => 1. * max_speed,
+                x if (0.5..=1.2).contains(&x) => x * (1. / 0.7) * max_speed,
+                x if x < 0.5 => 0. * max_speed,
                 _ => max_speed,
             };
             craft.velocity = ideal_speed * 0.15;
             if craft.weapon_cooldown.finished() && dist < 1.2 {
                 ship_fire(&mut commands, &mut craft, &bullet_texture, false)
-            }
-        }
-        for (_logic, mut craft) in captured.iter_mut() {
-            let mut enemies = enemies.iter().collect::<Vec<_>>();
-            enemies.sort_by(|(_, enemy_one), (_, enemy_two)| {
-                craft
-                    .position
-                    .distance(enemy_one.position)
-                    .partial_cmp(&craft.position.distance(enemy_two.position))
-                    .unwrap()
-            });
-            if let Some((_, target)) = enemies.first() {
-                craft.end_frame();
-                let ideal_direction = target.position - craft.position;
-                let ideal_heading = f32::atan2(ideal_direction.x, ideal_direction.y);
-                let ideal_heading_delta = ideal_heading - craft.heading;
-                let delta_heading = ideal_heading_delta.clamp(-TURN_SPEED, TURN_SPEED);
-                craft.rotate(delta_heading);
-                let max_speed = ShipProfile::from_type(craft.ship_type).max_velocity;
-                let dist = craft.position.distance(target.position);
-                let ideal_speed = match dist {
-                    x if x > 1.2 => 1. * max_speed,
-                    x if (0.5..=1.2).contains(&x) => x * (1. / 0.7) * max_speed,
-                    x if x < 0.5 => 0. * max_speed,
-                    _ => max_speed,
-                };
-                craft.velocity = ideal_speed * 0.15;
-                if craft.weapon_cooldown.finished() && dist < 1.2 {
-                    ship_fire(&mut commands, &mut craft, &bullet_texture, false)
-                }
             }
         }
     }
@@ -698,20 +735,25 @@ pub fn spawn_bullet(
         + Vec2::new(parent.heading.sin(), parent.heading.cos()).normalize()
             * 0.12
             * parent_template.relative_scale;
+    let mut heading = parent.heading;
+    if !player_shot {
+        let mut rand = rand::thread_rng();
+        heading += rand.gen_range(-0.4..0.4);
+    }
 
     commands
         .spawn(BulletBundle {
             bullet: Bullet {
-                heading: parent.heading,
+                heading,
                 position: parent.position + bullet_offset,
-                velocity: parent_template.base_bullet_velocity + parent.velocity,
+                velocity: parent_template.base_bullet_velocity + (parent.velocity).max(0.),
                 player_shot,
             },
             sprite: SpriteBundle {
                 texture: bullet_texture.0.clone(),
                 transform: Transform::from_xyz(0., 0., 30.)
                     .with_scale(Vec3::new(2., 2., 1.))
-                    .with_rotation(Quat::from_rotation_z(3. * PI / 2. - parent.heading)),
+                    .with_rotation(Quat::from_rotation_z(3. * PI / 2. - heading)),
                 ..default()
             },
             collider: ColliderBundle {
@@ -1024,7 +1066,7 @@ fn swap_ships(
             commands
                 .entity(curr_entity)
                 .remove::<PlayerMarker>()
-                .insert(NPCLogic);
+                .insert(NPCLogic(Vec2::ZERO));
             commands
                 .entity(dest_entity)
                 .remove::<NPCLogic>()
