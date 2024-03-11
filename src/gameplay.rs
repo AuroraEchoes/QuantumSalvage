@@ -43,7 +43,7 @@ use rand::Rng;
 
 pub const TURN_SPEED: f32 = 0.5;
 pub const ACCELERATION_SPEED: f32 = 0.005;
-pub const BULLET_SPEED: f32 = 0.01;
+pub const BULLET_SPEED: f32 = 0.015;
 pub const MAX_VELOCITY: f32 = 0.05;
 
 pub struct GameplayPlugin;
@@ -83,6 +83,7 @@ impl Plugin for GameplayPlugin {
                     swap_ships,
                     update_score,
                     spawn_ships,
+                    tick_bullet_immunity_time,
                 )
                     .run_if(in_state(GameLifecycleState::Game))
                     .run_if(in_state(GameState::Regular)),
@@ -101,7 +102,7 @@ impl Plugin for GameplayPlugin {
                     handle_shield_textures,
                     kill_dead_ships,
                     enforce_border,
-                    update_delayed_location
+                    update_delayed_location,
                 )
                     .run_if(in_state(GameLifecycleState::Game)),
             );
@@ -159,7 +160,7 @@ fn setup(
 
     commands
         .spawn(PlayerBundle::create_ship(
-            ShipType::Ship1,
+            ShipType::Ship2,
             Vec2::new(0., 0.),
             &textures,
         ))
@@ -249,7 +250,10 @@ impl EnemySpacecraftBundle {
         };
         Self {
             spacecraft: Spacecraft::from_template(ship_type, pos),
-            logic: NPCLogic(Vec2::new(rand.gen_range(-0.3..0.3), rand.gen_range(-0.3..0.3))),
+            logic: NPCLogic(Vec2::new(
+                rand.gen_range(-0.3..0.3),
+                rand.gen_range(-0.3..0.3),
+            )),
             sprite: SpriteBundle {
                 texture: ship_textures.texture(ship_type),
                 transform,
@@ -340,6 +344,10 @@ impl Spacecraft {
     }
 
     pub fn collide(&mut self, damage: i32, reduce_to_one: bool, score: &mut PlayerScore) -> bool {
+        println!(
+            "Collision, damage: {:?}, type: {:?}",
+            damage, self.ship_type
+        );
         // Whether to swap
         if self.health - damage <= 0 && reduce_to_one {
             self.health = 1;
@@ -398,7 +406,14 @@ pub struct ShieldTimeRemainingTimer(Timer);
 pub fn handle_inputs(
     mut commands: Commands,
     inputs: Res<ButtonInput<KeyCode>>,
-    mut player_ship: Query<(Entity, &mut Spacecraft), With<PlayerMarker>>,
+    mut player_ship: Query<
+        (Entity, &mut Spacecraft),
+        (
+            With<PlayerMarker>,
+            Without<RechargingShieldMarker>,
+            Without<ShieldTimeRemainingTimer>,
+        ),
+    >,
     mut dialogue: ResMut<Dialogue>,
     bullet_texture: Res<BulletTexture>,
     state: Res<State<GameState>>,
@@ -428,7 +443,13 @@ pub fn handle_inputs(
             && !state.get().eq(&GameState::Paused)
             && player_ship.weapon_cooldown.finished()
         {
-            ship_fire(&mut commands, &mut player_ship, &bullet_texture, true)
+            ship_fire(
+                &mut commands,
+                &mut player_ship,
+                entity,
+                &bullet_texture,
+                true,
+            )
         }
         if inputs.pressed(KeyCode::KeyS)
             && !state.get().eq(&GameState::Paused)
@@ -636,14 +657,17 @@ fn update_delayed_location(
 pub fn handle_npc_logic(
     mut commands: Commands,
     mut enemies: Query<
-        (&mut NPCLogic, &mut Spacecraft),
+        (Entity, &mut NPCLogic, &mut Spacecraft),
         (Without<Captured>, Without<PlayerMarker>),
     >,
-    mut captured: Query<(&mut NPCLogic, &mut Spacecraft), (With<Captured>, Without<PlayerMarker>)>,
+    mut captured: Query<
+        (Entity, &mut NPCLogic, &mut Spacecraft),
+        (With<Captured>, Without<PlayerMarker>),
+    >,
     player: Res<DelayedPlayerLocation>,
     bullet_texture: Res<BulletTexture>,
 ) {
-    for (logic, mut craft) in enemies.iter_mut() {
+    for (entity, logic, mut craft) in enemies.iter_mut() {
         craft.end_frame();
         let ideal_direction = player.current_location - craft.position + logic.0;
         let ideal_heading = f32::atan2(ideal_direction.x, ideal_direction.y);
@@ -660,19 +684,25 @@ pub fn handle_npc_logic(
         };
         craft.velocity = ideal_speed * 0.15;
         if craft.weapon_cooldown.finished() && dist < 1.2 {
-            ship_fire(&mut commands, &mut craft, &bullet_texture, false)
+            let mut rand = rand::thread_rng();
+            let fire_chance = rand.gen_range(0.0..1.0);
+            if fire_chance > 0.5 {
+                ship_fire(&mut commands, &mut craft, entity, &bullet_texture, false)
+            } else {
+                craft.weapon_cooldown.reset();
+            }
         }
     }
-    for (_logic, mut craft) in captured.iter_mut() {
+    for (entity, _logic, mut craft) in captured.iter_mut() {
         let mut enemies = enemies.iter().collect::<Vec<_>>();
-        enemies.sort_by(|(_, enemy_one), (_, enemy_two)| {
+        enemies.sort_by(|(_, _, enemy_one), (_, _, enemy_two)| {
             craft
                 .position
                 .distance(enemy_one.position)
                 .partial_cmp(&craft.position.distance(enemy_two.position))
                 .unwrap()
         });
-        if let Some((_, target)) = enemies.first() {
+        if let Some((_, _, target)) = enemies.first() {
             craft.end_frame();
             let ideal_direction = target.position - craft.position;
             let ideal_heading = f32::atan2(ideal_direction.x, ideal_direction.y);
@@ -689,7 +719,7 @@ pub fn handle_npc_logic(
             };
             craft.velocity = ideal_speed * 0.15;
             if craft.weapon_cooldown.finished() && dist < 1.2 {
-                ship_fire(&mut commands, &mut craft, &bullet_texture, false)
+                ship_fire(&mut commands, &mut craft, entity, &bullet_texture, false)
             }
         }
     }
@@ -701,21 +731,62 @@ pub struct BulletTexture(Handle<Image>);
 pub fn ship_fire(
     commands: &mut Commands,
     parent: &mut Spacecraft,
+    parent_entity: Entity,
     bullet_texture: &BulletTexture,
     player_shot: bool,
 ) {
     match parent.ship_type {
-        ShipType::Ship1 | ShipType::Ship3 | ShipType::Ship5 => {
-            spawn_bullet(commands, parent, bullet_texture, 0., player_shot)
-        }
+        ShipType::Ship1 | ShipType::Ship3 | ShipType::Ship5 => spawn_bullet(
+            commands,
+            parent,
+            parent_entity,
+            bullet_texture,
+            0.,
+            player_shot,
+        ),
         ShipType::Ship2 => {
-            spawn_bullet(commands, parent, bullet_texture, -0.03, player_shot);
-            spawn_bullet(commands, parent, bullet_texture, 0.03, player_shot);
+            spawn_bullet(
+                commands,
+                parent,
+                parent_entity,
+                bullet_texture,
+                -0.03,
+                player_shot,
+            );
+            spawn_bullet(
+                commands,
+                parent,
+                parent_entity,
+                bullet_texture,
+                0.03,
+                player_shot,
+            );
         }
         ShipType::Ship4 | ShipType::Ship6 => {
-            spawn_bullet(commands, parent, bullet_texture, -0.05, player_shot);
-            spawn_bullet(commands, parent, bullet_texture, 0., player_shot);
-            spawn_bullet(commands, parent, bullet_texture, 0.05, player_shot);
+            spawn_bullet(
+                commands,
+                parent,
+                parent_entity,
+                bullet_texture,
+                -0.05,
+                player_shot,
+            );
+            spawn_bullet(
+                commands,
+                parent,
+                parent_entity,
+                bullet_texture,
+                0.,
+                player_shot,
+            );
+            spawn_bullet(
+                commands,
+                parent,
+                parent_entity,
+                bullet_texture,
+                0.05,
+                player_shot,
+            );
         }
     }
 }
@@ -723,6 +794,7 @@ pub fn ship_fire(
 pub fn spawn_bullet(
     commands: &mut Commands,
     parent: &mut Spacecraft,
+    parent_entity: Entity,
     bullet_texture: &BulletTexture,
     lateral_offset: f32,
     player_shot: bool,
@@ -747,6 +819,8 @@ pub fn spawn_bullet(
                 heading,
                 position: parent.position + bullet_offset,
                 velocity: parent_template.base_bullet_velocity + (parent.velocity).max(0.),
+                shooter: parent_entity,
+                immunity_time: Timer::from_seconds(0.25, TimerMode::Once),
                 player_shot,
             },
             sprite: SpriteBundle {
@@ -772,6 +846,8 @@ pub struct Bullet {
     heading: f32,
     position: Vec2,
     velocity: f32,
+    shooter: Entity,
+    immunity_time: Timer,
     player_shot: bool,
 }
 
@@ -838,7 +914,10 @@ fn pause_for_captured_ship(
 fn collide_bullets(
     mut commands: Commands,
     mut collision_events: EventReader<CollisionEvent>,
-    mut ships: Query<(Entity, &mut Spacecraft)>,
+    mut ships: Query<
+        (Entity, &mut Spacecraft),
+        Without<MyFateLiesInTheBalanceAndIWouldReallyAppreciateIfIfYouDidntKillMeMarker>,
+    >,
     bullets: Query<(Entity, &Bullet)>,
     mut score: ResMut<PlayerScore>,
 ) {
@@ -858,6 +937,12 @@ fn collide_bullets(
                 for (entity, mut ship) in ships.iter_mut() {
                     if &entity == a {
                         if let Some(mut entity) = commands.get_entity(*a) {
+                            for (_, bullet) in bullets.iter() {
+                                if bullet.shooter == *a && !bullet.immunity_time.finished() {
+                                    println!("Bypassing damage {:?} {:?}", bullet.shooter, a);
+                                    return;
+                                }
+                            }
                             if score.survived_time.elapsed_secs() > 3. {
                                 entity.insert(ExplosionMarker);
                                 if ship.collide(1, b_shotby_p, &mut score) {
@@ -884,6 +969,12 @@ fn collide_bullets(
                         return;
                     } else if &entity == b {
                         if let Some(mut entity) = commands.get_entity(*b) {
+                            for (_, bullet) in bullets.iter() {
+                                if bullet.shooter == *b && !bullet.immunity_time.finished() {
+                                    println!("Bypassing damage {:?} {:?}", bullet.shooter, b);
+                                    return;
+                                }
+                            }
                             if score.survived_time.elapsed_secs() > 3. {
                                 entity.insert(ExplosionMarker);
                                 if ship.collide(1, a_shotby_p, &mut score) {
@@ -1080,7 +1171,7 @@ fn swap_ships(
     }
 }
 
-#[derive(Clone, Component, Copy, Reflect)]
+#[derive(Clone, Component, Copy, Debug, Reflect)]
 pub enum ShipType {
     Ship1,
     Ship2,
@@ -1117,7 +1208,7 @@ impl ShipProfile {
             ShipType::Ship1 => ShipProfile {
                 max_health: 2,
                 max_velocity: MAX_VELOCITY,
-                shield_recharge_time: Duration::from_secs(8),
+                shield_recharge_time: Duration::from_secs(4),
                 gun_reload_time: Duration::from_millis(1000),
                 shots: 1,
                 base_bullet_velocity: BULLET_SPEED,
@@ -1126,7 +1217,7 @@ impl ShipProfile {
             ShipType::Ship2 => ShipProfile {
                 max_health: 3,
                 max_velocity: MAX_VELOCITY * 1.3,
-                shield_recharge_time: Duration::from_secs(6),
+                shield_recharge_time: Duration::from_secs(3),
                 gun_reload_time: Duration::from_millis(1300),
                 shots: 2,
                 base_bullet_velocity: BULLET_SPEED * 0.9,
@@ -1135,7 +1226,7 @@ impl ShipProfile {
             ShipType::Ship3 => ShipProfile {
                 max_health: 5,
                 max_velocity: MAX_VELOCITY * 1.7,
-                shield_recharge_time: Duration::from_secs(6),
+                shield_recharge_time: Duration::from_secs(3),
                 gun_reload_time: Duration::from_millis(600),
                 shots: 1,
                 base_bullet_velocity: BULLET_SPEED * 1.3,
@@ -1144,7 +1235,7 @@ impl ShipProfile {
             ShipType::Ship4 => ShipProfile {
                 max_health: 6,
                 max_velocity: MAX_VELOCITY * 1.4,
-                shield_recharge_time: Duration::from_secs(5),
+                shield_recharge_time: Duration::from_secs(2),
                 gun_reload_time: Duration::from_millis(1000),
                 shots: 3,
                 base_bullet_velocity: BULLET_SPEED * 1.,
@@ -1153,7 +1244,7 @@ impl ShipProfile {
             ShipType::Ship5 => ShipProfile {
                 max_health: 7,
                 max_velocity: MAX_VELOCITY * 2.3,
-                shield_recharge_time: Duration::from_secs(3),
+                shield_recharge_time: Duration::from_secs(2),
                 gun_reload_time: Duration::from_millis(1400),
                 shots: 1,
                 base_bullet_velocity: BULLET_SPEED * 3.,
@@ -1162,7 +1253,7 @@ impl ShipProfile {
             ShipType::Ship6 => ShipProfile {
                 max_health: 10,
                 max_velocity: MAX_VELOCITY * 2.,
-                shield_recharge_time: Duration::from_secs(2),
+                shield_recharge_time: Duration::from_secs(1),
                 gun_reload_time: Duration::from_millis(400),
                 shots: 3,
                 base_bullet_velocity: BULLET_SPEED * 2.,
@@ -1299,4 +1390,10 @@ pub struct PlayerScore {
     pub score: u32,
     pub add_score_timer: Timer,
     pub survived_time: Stopwatch,
+}
+
+fn tick_bullet_immunity_time(time: Res<Time>, mut bullets: Query<&mut Bullet>) {
+    bullets.iter_mut().for_each(|mut b| {
+        b.immunity_time.tick(time.delta());
+    })
 }
